@@ -14,6 +14,7 @@ import {
   UpdateDateColumn,
 } from "typeorm";
 import { BankAccount } from "../../bank/entities/bank.entity";
+import { Transaction } from "../../Transactions/entities/transaction.entity";
 
 export enum UserStatus {
   ACTIVE = "ACTIVE",
@@ -85,4 +86,12 @@ export class User {
   @Field(() => [BankAccount], { nullable: true })
   @OneToMany(() => BankAccount, (bankAccount) => bankAccount.user)
   bankAccounts?: BankAccount[];
+
+  @Field(() => [Transaction], { nullable: true })
+  @OneToMany(() => Transaction, (transaction) => transaction.fromAccount)
+  sentTransactions?: Transaction[];
+
+  @Field(() => [Transaction], { nullable: true })
+  @OneToMany(() => Transaction, (transaction) => transaction.toAccount)
+  receivedTransactions?: Transaction[];
 }

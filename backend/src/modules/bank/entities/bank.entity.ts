@@ -12,9 +12,11 @@ import {
   Entity,
   JoinColumn,
   ManyToOne,
+  OneToMany,
   PrimaryGeneratedColumn,
 } from "typeorm";
 import { User } from "../../user/entities/user.entity";
+import { Transaction } from "../../Transactions/entities/transaction.entity";
 
 export enum AccountType {
   SAVINGS = "SAVINGS",
@@ -107,4 +109,10 @@ export class BankAccount {
   @ManyToOne(() => User, (user) => user.bankAccounts, { onDelete: "CASCADE" })
   @JoinColumn({ name: "userId" })
   user?: User;
+
+  @OneToMany(() => Transaction, (transaction) => transaction.fromAccount)
+  outgoingTransactions?: Transaction[];
+
+  @OneToMany(() => Transaction, (transaction) => transaction.toAccount)
+  incomingTransactions?: Transaction[];
 }
