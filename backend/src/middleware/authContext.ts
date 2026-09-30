@@ -5,6 +5,7 @@ import { ExpressContextFunctionArgument } from "@as-integrations/express4";
 export interface AuthUser {
   userId: string;
   email: string;
+  role: string;
 }
 
 declare global {
@@ -24,6 +25,7 @@ export interface AuthContext {
 interface JwtPayload {
   userId: string;
   email: string;
+  role: string;
 }
 
 function getUserFromRequest(req: Request): AuthUser | null {
@@ -38,7 +40,12 @@ function getUserFromRequest(req: Request): AuthUser | null {
     return null;
   }
 
-  const secret = process.env.JWT_SECRET || "default_banking_jwt_secret";
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    // Fail closed. Falling back to a hardcoded secret would let anyone who
+    // reads the repo mint valid tokens.
+    return null;
+  }
 
   try {
     const decoded = jwt.verify(token, secret) as JwtPayload;
@@ -49,6 +56,7 @@ function getUserFromRequest(req: Request): AuthUser | null {
     return {
       userId: decoded.userId,
       email: decoded.email,
+      role: decoded.role,
     };
   } catch {
     return null;

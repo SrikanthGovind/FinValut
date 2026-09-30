@@ -22,10 +22,22 @@ export enum UserStatus {
   BLOCKED = "BLOCKED",
 }
 
+export enum UserRole {
+  CUSTOMER = "CUSTOMER",
+  TELLER = "TELLER",
+  AUDITOR = "AUDITOR",
+  ADMIN = "ADMIN",
+}
+
 // Register enum with Type-GraphQL so it can be queried/mutated via GraphQL
 registerEnumType(UserStatus, {
   name: "UserStatus",
   description: "Status of the user account",
+});
+
+registerEnumType(UserRole, {
+  name: "UserRole",
+  description: "Authorization role of the user account",
 });
 
 @Entity("User")
@@ -74,6 +86,12 @@ export class User {
     default: UserStatus.ACTIVE,
   })
   status!: UserStatus;
+
+  // Role is never accepted from client input. Only setUserRole (ADMIN-gated)
+  // may change it, so escalation is always an audited event.
+  @Field(() => UserRole)
+  @Column({ type: "enum", enum: UserRole, default: UserRole.CUSTOMER })
+  role!: UserRole;
 
   @Field(() => GraphQLISODateTime)
   @CreateDateColumn()

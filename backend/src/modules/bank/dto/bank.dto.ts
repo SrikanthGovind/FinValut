@@ -1,4 +1,4 @@
-import { ArgsType, Field, Float, ID, InputType } from "type-graphql";
+import { ArgsType, Field, Float, InputType } from "type-graphql";
 import { Min } from "class-validator";
 import { AccountType, BankAccountStatus } from "../entities/bank.entity";
 
@@ -31,9 +31,6 @@ export class CreateBankAccountInput {
     description: "Auto-generated if not provided.",
   })
   ifscCode?: string;
-
-  @Field(() => ID)
-  userId!: string;
 }
 
 @InputType({ description: "Input data to update account status" })

@@ -21,7 +21,7 @@ export function signAccessToken(user: AuthUser): {
 } {
   const expiresIn = getJwtExpiresIn();
   const accessToken = jwt.sign(
-    { userId: user.userId, email: user.email },
+    { userId: user.userId, email: user.email, role: user.role },
     getJwtSecret(),
     { expiresIn }
   );

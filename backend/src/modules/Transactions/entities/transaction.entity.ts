@@ -21,6 +21,10 @@ export enum TransactionType {
   DEBIT = "DEBIT",
   CREDIT = "CREDIT",
   TRANSFER = "TRANSFER",
+  /** Counter deposit of physical cash, performed by a TELLER. */
+  CASH_DEPOSIT = "CASH_DEPOSIT",
+  /** Counter withdrawal of physical cash, performed by a TELLER. */
+  CASH_WITHDRAWAL = "CASH_WITHDRAWAL",
 }
 
 export enum TransactionStatus {
@@ -91,6 +95,42 @@ export class Transaction {
   @Field(() => GraphQLISODateTime)
   @Column({ type: "timestamp", default: () => "CURRENT_TIMESTAMP" })
   transactionDate!: Date;
+
+  /**
+   * How the money moved: SELF_SERVICE for customer-initiated requests, COUNTER
+   * for teller-handled cash. Absent for older rows, so nullable rather than
+   * defaulted.
+   *
+   * An explicit varchar type is required: the `string | null` union defeats
+   * TypeORM's reflect-metadata type inference and it otherwise tries to map the
+   * column as "Object", which Postgres rejects.
+   */
+  @Field(() => String, { nullable: true })
+  @Column({ type: "varchar", length: 32, nullable: true })
+  channel?: string | null;
+
+  /**
+   * Staff member who performed a counter operation. Null for self-service.
+   *
+   * Indexed because the audit and reconciliation questions this answers are
+   * always "everything this teller did", and the approval queue is reached
+   * from here. The name is pinned rather than auto-generated so it matches the
+   * index the migration created; an undeclared index makes `migration:generate`
+   * emit a migration that drops it.
+   */
+  @Field(() => ID, { nullable: true })
+  @Index("IDX_transaction_tellerId")
+  @Column({ type: "uuid", nullable: true })
+  tellerId?: string | null;
+
+  /** Set when the transaction is awaiting admin approval. */
+  @Field(() => GraphQLISODateTime, { nullable: true })
+  @Column({ type: "timestamp", nullable: true })
+  approvedAt?: Date | null;
+
+  @Field(() => ID, { nullable: true })
+  @Column({ type: "uuid", nullable: true })
+  approvedById?: string | null;
 
   @Field(() => GraphQLISODateTime)
   @CreateDateColumn({ type: "timestamp" })

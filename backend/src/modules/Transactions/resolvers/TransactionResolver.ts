@@ -1,6 +1,7 @@
 import {
   Arg,
   Args,
+  Authorized,
   Ctx,
   FieldResolver,
   ID,
@@ -15,39 +16,135 @@ import {
   TransactionType,
 } from "../entities/transaction.entity";
 import { CreateTransactionInput } from "../dto/transaction.dto";
-import { BankAccount, BankAccountStatus } from "../../bank/entities/bank.entity";
+import { BankAccount } from "../../bank/entities/bank.entity";
 import { AppDataSource } from "../../../config/database/data-source";
 import { AuthContext } from "../../../middleware/authContext";
+import { CAPABILITIES, hasPermission } from "../../../permissions";
+import {
+  AuditAction,
+  AuditOutcome,
+} from "../../audit/entities/audit-log.entity";
+import { writeAuditLog } from "../../audit/services/audit.service";
+import { TRANSFER_APPROVAL_THRESHOLD } from "../dto/staff.dto";
+import {
+  applyBalanceChange,
+  assertAccountExists,
+  assertActive,
+  assertSufficientFunds,
+  lockAccounts,
+  recordTransaction,
+} from "../services/transaction.service";
+
+/** Resolve one of the two locked accounts by ID. */
+function accountsByIdOf(
+  accounts: { fromAccount: BankAccount | null; toAccount: BankAccount | null },
+  accountId: string
+): BankAccount | null {
+  if (accounts.fromAccount?.id === accountId) {
+    return accounts.fromAccount;
+  }
+  if (accounts.toAccount?.id === accountId) {
+    return accounts.toAccount;
+  }
+  return null;
+}
 
 @Resolver(() => Transaction)
 export class TransactionResolver {
-  // Query: Get all transactions
-  @Query(() => [Transaction], { description: "Get list of all transactions" })
+  private static requireUser(ctx: AuthContext): NonNullable<AuthContext["user"]> {
+    if (!ctx.user) {
+      throw new Error("Authentication required");
+    }
+    return ctx.user;
+  }
+
+  /**
+   * Guards the money-moving paths.
+   *
+   * The capability is passed in rather than assumed, because "may act on any
+   * account" is not one permission: a TELLER may serve an account at the
+   * counter but may not reverse transactions on it, and an AUDITOR may read
+   * one but may not transfer from it. Hard-coding an admin bypass here
+   * is what previously let one role's rights leak into unrelated operations.
+   */
+  private static assertAccountAccess(
+    caller: NonNullable<AuthContext["user"]>,
+    account: BankAccount | null,
+    label: string,
+    capability: (typeof CAPABILITIES)[keyof typeof CAPABILITIES]
+  ): void {
+    if (!account) {
+      return;
+    }
+    if (account.userId === caller.userId) {
+      return;
+    }
+    if (hasPermission(caller.role, capability)) {
+      return;
+    }
+    throw new Error(
+      `${label} account ${account.accountNumber} does not belong to the authenticated user`
+    );
+  }
+
+  // Query: Get all transactions. Staff tooling only.
+  @Query(() => [Transaction], {
+    description: "Get list of all transactions (auditor or admin)",
+  })
+  @Authorized(CAPABILITIES.TRANSACTION_READ_ANY)
   async getTransactions(): Promise<Transaction[]> {
     return await AppDataSource.getRepository(Transaction).find({
       order: { transactionDate: "DESC" },
     });
   }
 
-  // Query: Get single transaction by ID
+  // Query: Get single transaction by ID, scoped to the caller's accounts
   @Query(() => Transaction, {
     nullable: true,
-    description: "Get a transaction by ID",
+    description:
+      "Get a transaction by ID (own accounts only, unless admin)",
   })
+  @Authorized(CAPABILITIES.TRANSACTION_READ)
   async getTransaction(
+    @Ctx() ctx: AuthContext,
     @Arg("id", () => ID) id: string
   ): Promise<Transaction | null> {
-    return await AppDataSource.getRepository(Transaction).findOneBy({ id });
+    const caller = TransactionResolver.requireUser(ctx);
+    const transaction = await AppDataSource.getRepository(Transaction).findOneBy(
+      { id }
+    );
+
+    if (!transaction) {
+      return null;
+    }
+
+    if (hasPermission(caller.role, CAPABILITIES.TRANSACTION_READ_ANY)) {
+      return transaction;
+    }
+
+    const accounts = await AppDataSource.getRepository(BankAccount)
+      .createQueryBuilder("account")
+      .where("account.id IN (:...ids)", {
+        ids: [transaction.fromAccountId, transaction.toAccountId].filter(
+          (accountId): accountId is string => !!accountId
+        ),
+      })
+      .getMany();
+
+    const isParticipant = accounts.some(
+      (account) => account.userId === caller.userId
+    );
+
+    return isParticipant ? transaction : null;
   }
 
   // Query: Get all transactions for the currently authenticated user
   @Query(() => [Transaction], {
     description: "Get all transactions for the currently logged-in user",
   })
+  @Authorized(CAPABILITIES.TRANSACTION_READ)
   async myTransactions(@Ctx() ctx: AuthContext): Promise<Transaction[]> {
-    if (!ctx.user) {
-      throw new Error("Authentication required");
-    }
+    const caller = TransactionResolver.requireUser(ctx);
     return await AppDataSource.getRepository(Transaction)
       .createQueryBuilder("transaction")
       .leftJoin(
@@ -60,19 +157,39 @@ export class TransactionResolver {
         "counterparty",
         "counterparty.id = transaction.toAccountId"
       )
-      .where("account.userId = :userId", { userId: ctx.user.userId })
-      .orWhere("counterparty.userId = :userId", { userId: ctx.user.userId })
+      .where("account.userId = :userId", { userId: caller.userId })
+      .orWhere("counterparty.userId = :userId", { userId: caller.userId })
       .orderBy("transaction.transactionDate", "DESC")
       .getMany();
   }
 
   // Query: Get all transactions on a specific bank account
   @Query(() => [Transaction], {
-    description: "Get all transactions for a specific bank account ID",
+    description:
+      "Get all transactions for a specific bank account ID (own accounts only, unless admin)",
   })
+  @Authorized()
   async getTransactionsByAccount(
+    @Ctx() ctx: AuthContext,
     @Arg("accountId", () => ID) accountId: string
   ): Promise<Transaction[]> {
+    const caller = TransactionResolver.requireUser(ctx);
+
+    const account = await AppDataSource.getRepository(BankAccount).findOneBy({
+      id: accountId,
+    });
+
+    if (!account) {
+      throw new Error(`Bank account with ID ${accountId} not found`);
+    }
+
+    TransactionResolver.assertAccountAccess(
+      caller,
+      account,
+      "Source",
+      CAPABILITIES.TRANSACTION_READ_ANY
+    );
+
     return await AppDataSource.getRepository(Transaction)
       .createQueryBuilder("transaction")
       .where("transaction.fromAccountId = :accountId", { accountId })
@@ -85,9 +202,13 @@ export class TransactionResolver {
   @Mutation(() => Transaction, {
     description: "Record a transaction between two bank accounts",
   })
+  @Authorized(CAPABILITIES.TRANSACTION_CREATE)
   async createTransaction(
+    @Ctx() ctx: AuthContext,
     @Args() data: CreateTransactionInput
   ): Promise<Transaction> {
+    const caller = TransactionResolver.requireUser(ctx);
+
     if (!data.fromAccountId && !data.toAccountId) {
       throw new Error("At least one of fromAccountId or toAccountId is required");
     }
@@ -114,92 +235,85 @@ export class TransactionResolver {
       throw new Error("Source and destination accounts must be different");
     }
 
-    return await AppDataSource.transaction(async (manager) => {
-      const accountRepo = manager.getRepository(BankAccount);
+    // Large transfers wait for an admin rather than settling immediately.
+    // The money is not moved until approveTransaction runs, so a queued
+    // transfer does not freeze the sender's balance.
+    const needsApproval =
+      data.transactionType === TransactionType.TRANSFER &&
+      data.amount > TRANSFER_APPROVAL_THRESHOLD;
 
-      // Lock every participating row with SELECT ... FOR UPDATE, in a stable
-      // sorted order. Without FOR UPDATE two concurrent transactions both read
-      // the same balance and both write it back (lost update / money created).
-      // Sorted IDs stop A->B and B->A from deadlocking on each other.
-      const accountIds = [data.fromAccountId, data.toAccountId]
-        .filter((accountId): accountId is string => !!accountId)
-        .sort();
+    try {
+      return await AppDataSource.transaction(async (manager) => {
+      const accounts = await lockAccounts(manager, data.fromAccountId, data.toAccountId);
 
-      const lockedAccounts = await accountRepo
-        .createQueryBuilder("account")
-        .setLock("pessimistic_write")
-        .where("account.id IN (:...accountIds)", { accountIds })
-        .getMany();
+      assertAccountExists(accounts.fromAccount, data.fromAccountId, "Source");
+      assertAccountExists(accounts.toAccount, data.toAccountId, "Destination");
+      assertActive(accounts.fromAccount, "Source");
+      assertActive(accounts.toAccount, "Destination");
 
-      const accountsById = new Map(
-        lockedAccounts.map((account) => [account.id, account])
-      );
-
-      const fromAccount = data.fromAccountId
-        ? accountsById.get(data.fromAccountId) ?? null
-        : null;
-      const toAccount = data.toAccountId
-        ? accountsById.get(data.toAccountId) ?? null
-        : null;
-
-      if (data.fromAccountId && !fromAccount) {
-        throw new Error(`Bank account with ID ${data.fromAccountId} not found`);
-      }
-
-      if (data.toAccountId && !toAccount) {
-        throw new Error(`Bank account with ID ${data.toAccountId} not found`);
-      }
-
-      if (fromAccount && fromAccount.status !== BankAccountStatus.ACTIVE) {
-        throw new Error(`Source account ${fromAccount.accountNumber} is not ACTIVE`);
-      }
-
-      if (toAccount && toAccount.status !== BankAccountStatus.ACTIVE) {
-        throw new Error(`Destination account ${toAccount.accountNumber} is not ACTIVE`);
-      }
-
-      if (fromAccount && fromAccount.balance < data.amount) {
-        throw new Error("Insufficient balance in the source account");
-      }
-
-      if (fromAccount) {
-        fromAccount.balance = Number(
-          (fromAccount.balance - data.amount).toFixed(2)
+      // Money leaves the source account, so the caller must own it unless the
+      // role holds an explicit "act on any account" capability. The destination
+      // may belong to anyone: that is what a transfer is for. A CREDIT has no
+      // source, so the destination is the caller's own account.
+      if (data.transactionType === TransactionType.CREDIT) {
+        TransactionResolver.assertAccountAccess(
+          caller,
+          accounts.toAccount,
+          "Destination",
+          CAPABILITIES.TRANSACTION_CREATE_ANY
         );
-        await accountRepo.save(fromAccount);
+      } else {
+        TransactionResolver.assertAccountAccess(
+          caller,
+          accounts.fromAccount,
+          "Source",
+          CAPABILITIES.TRANSACTION_CREATE_ANY
+        );
       }
 
-      if (toAccount) {
-        toAccount.balance = Number((toAccount.balance + data.amount).toFixed(2));
-        await accountRepo.save(toAccount);
+      assertSufficientFunds(accounts.fromAccount, data.amount);
+
+      if (!needsApproval) {
+        await applyBalanceChange(manager, accounts, data.amount);
       }
 
-      const newTransaction = manager.getRepository(Transaction).create({
-        referenceNumber: `TXN${Date.now()}${Math.floor(Math.random() * 10000)
-          .toString()
-          .padStart(4, "0")}`,
+      return await recordTransaction(manager, {
         transactionType: data.transactionType,
-        status: TransactionStatus.COMPLETED,
+        fromAccountId: data.fromAccountId,
+        toAccountId: data.toAccountId,
         amount: data.amount,
-        currency: data.currency || "INR",
-        description: data.description ?? null,
-        fromAccountId: data.fromAccountId ?? null,
-        toAccountId: data.toAccountId ?? null,
-        transactionDate: new Date(),
+        currency: data.currency,
+        description: data.description,
+        status: needsApproval
+          ? TransactionStatus.PENDING
+          : TransactionStatus.COMPLETED,
+        channel: "SELF_SERVICE",
       });
-
-      return await manager.getRepository(Transaction).save(newTransaction);
-    });
+      });
+    } catch (error) {
+      // Recorded outside the transaction deliberately: the write must survive
+      // the rollback that the failure caused.
+      await writeAuditLog({
+        action: AuditAction.TRANSACTION_CREATED,
+        outcome: AuditOutcome.FAILURE,
+        ctx,
+        entityType: "AccountPair",
+        reason: (error as Error).message,
+      });
+      throw error;
+    }
   }
 
   // Mutation: Reverse a completed transaction and restore the balance
   @Mutation(() => Transaction, { description: "Reverse a completed transaction" })
+  @Authorized()
   async reverseTransaction(
+    @Ctx() ctx: AuthContext,
     @Arg("id", () => ID) id: string
   ): Promise<Transaction> {
+    const caller = TransactionResolver.requireUser(ctx);
     return await AppDataSource.transaction(async (manager) => {
       const transactionRepo = manager.getRepository(Transaction);
-      const accountRepo = manager.getRepository(BankAccount);
 
       // Lock the transaction row first so two concurrent reversals of the same
       // transaction cannot both see status COMPLETED.
@@ -221,43 +335,57 @@ export class TransactionResolver {
         throw new Error("Only COMPLETED transactions can be reversed");
       }
 
-      const accountIds = [existing.fromAccountId, existing.toAccountId]
-        .filter((accountId): accountId is string => !!accountId)
-        .sort();
-
-      const lockedAccounts = await accountRepo
-        .createQueryBuilder("account")
-        .setLock("pessimistic_write")
-        .where("account.id IN (:...accountIds)", { accountIds })
-        .getMany();
-
-      const accountsById = new Map(
-        lockedAccounts.map((account) => [account.id, account])
+      // Reversal credits the source and debits the destination, so it can move
+      // money out of someone else's account. Only the participant who sent the
+      // money, or a role holding TRANSACTION_REVERSE, may trigger it.
+      const accounts = await lockAccounts(
+        manager,
+        existing.fromAccountId,
+        existing.toAccountId
       );
 
-      const fromAccount = existing.fromAccountId
-        ? accountsById.get(existing.fromAccountId) ?? null
-        : null;
+      const originatingAccountId = existing.fromAccountId ?? existing.toAccountId;
 
-      if (fromAccount) {
-        fromAccount.balance = Number(
-          (fromAccount.balance + existing.amount).toFixed(2)
+      if (originatingAccountId) {
+        const originatingAccount = accountsByIdOf(accounts, originatingAccountId);
+        if (!originatingAccount) {
+          // Fail closed: a missing row must not be treated as "no owner to
+          // check against", which would let anyone reverse the transaction.
+          throw new Error(
+            `Originating account with ID ${originatingAccountId} not found`
+          );
+        }
+        TransactionResolver.assertAccountAccess(
+          caller,
+          originatingAccount,
+          "Originating",
+          CAPABILITIES.TRANSACTION_REVERSE
         );
-        await accountRepo.save(fromAccount);
       }
 
-      const toAccount = existing.toAccountId
-        ? accountsById.get(existing.toAccountId) ?? null
-        : null;
+      // The destination is on the debit side of a reversal. If the funds are
+      // gone (customer already spent a credited deposit), refuse rather than
+      // clamp at zero: silently writing 0 hides the shortfall and the ledger
+      // stops reconciling. The rejection is auditable, the invented balance is
+      // not.
+      assertSufficientFunds(accounts.toAccount, existing.amount);
 
-      if (toAccount) {
-        toAccount.balance = Number(
-          Math.max(0, toAccount.balance - existing.amount).toFixed(2)
-        );
-        await accountRepo.save(toAccount);
-      }
+      // Negative amount inverts the direction: source is credited.
+      await applyBalanceChange(manager, accounts, -existing.amount);
 
       existing.status = TransactionStatus.REVERSED;
+
+      await writeAuditLog({
+        action: AuditAction.TRANSACTION_REVERSED,
+        outcome: AuditOutcome.SUCCESS,
+        ctx,
+        entityType: "Transaction",
+        entityId: id,
+        changes: { status: { from: TransactionStatus.COMPLETED, to: TransactionStatus.REVERSED } },
+        reason: "Reversal requested by account participant or privileged role",
+        manager,
+      });
+
       return await transactionRepo.save(existing);
     });
   }
