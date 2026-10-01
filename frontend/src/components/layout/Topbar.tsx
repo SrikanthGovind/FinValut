@@ -12,7 +12,6 @@ import {
   MenuItem,
   Stack,
   Toolbar,
-  Tooltip,
   Typography,
 } from "@mui/material";
 import SearchRounded from "@mui/icons-material/SearchRounded";
@@ -21,7 +20,6 @@ import PersonOutlineRounded from "@mui/icons-material/PersonOutlineRounded";
 import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
 import OpenInNewRounded from "@mui/icons-material/OpenInNewRounded";
-import MenuRounded from "@mui/icons-material/MenuRounded";
 import { useNavigate } from "react-router-dom";
 
 import { useAuth } from "../../auth/AuthContext";
@@ -87,12 +85,6 @@ export function Topbar({ sidebarCollapsed, onToggleSidebar, children }: TopbarPr
       }}
     >
       <Toolbar sx={{ minHeight: "64px !important", gap: 1.5, px: { xs: 2, lg: 3 } }}>
-        <Tooltip title={sidebarCollapsed ? "Expand navigation" : "Collapse navigation"}>
-          <IconButton onClick={onToggleSidebar} aria-label="Toggle navigation" size="small">
-            <MenuRounded fontSize="small" />
-          </IconButton>
-        </Tooltip>
-
         {/* Global search: resolves to any page this role can reach, so it can
             never surface a route that would come back as "Not authorized". */}
         <Box sx={{ position: "relative", flexGrow: 1, maxWidth: 460 }}>

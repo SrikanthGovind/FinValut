@@ -66,7 +66,10 @@ export function Sidebar({ collapsed, onToggle, pendingApprovals }: SidebarProps)
         overflow: "hidden",
       }}
     >
+
+      <Box sx={{display: "flex", justifyContent: "space-between", alignItems: "center"}}>
       {/* Brand */}
+      {!collapsed && (
       <Stack
         direction="row"
         spacing={1.25}
@@ -87,7 +90,7 @@ export function Sidebar({ collapsed, onToggle, pendingApprovals }: SidebarProps)
         >
           <AccountBalance sx={{ fontSize: 20 }} />
         </Box>
-        {!collapsed && (
+  
           <Box sx={{ minWidth: 0 }}>
             <Typography sx={{ fontWeight: 800, fontSize: "1rem", letterSpacing: "-0.01em", lineHeight: 1.1 }}>
               FinVault
@@ -96,13 +99,11 @@ export function Sidebar({ collapsed, onToggle, pendingApprovals }: SidebarProps)
               CORE BANKING
             </Typography>
           </Box>
-        )}
-      </Stack>
+        </Stack>
+          )}
 
-      <Divider sx={{ borderColor: "rgba(255,255,255,0.08)" }} />
-
-      {/* Collapse toggle pinned top */}
-      <Box sx={{ display: "grid", placeItems: "flex-end", px: 1.5, py: 1 }}>
+            {/* Collapse toggle pinned top */}
+            <Box sx={{ display: "grid", placeItems: "flex-end", px: 1.5, py: 1 }}>
         <Tooltip title={collapsed ? "Expand" : "Collapse"} placement="right">
           <IconButton
             size="small"
@@ -117,6 +118,12 @@ export function Sidebar({ collapsed, onToggle, pendingApprovals }: SidebarProps)
           </IconButton>
         </Tooltip>
       </Box>
+      </Box>
+
+
+      <Divider sx={{ borderColor: "rgba(255,255,255,0.08)" }} />
+
+
 
       {/* Navigation */}
       <Box sx={{ flexGrow: 1, overflowY: "auto", py: 1.5, px: collapsed ? 1 : 1.25 }}>
