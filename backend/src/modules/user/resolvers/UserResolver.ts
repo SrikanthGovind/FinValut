@@ -157,7 +157,10 @@ export class UserResolver {
     if (data.lastName !== undefined) user.lastName = data.lastName;
     if (data.phone !== undefined) user.phone = data.phone;
     if (data.dateOfBirth !== undefined) {
-      user.dateOfBirth = new Date(data.dateOfBirth);
+      // An explicit null means "clear it". `new Date(null)` is the epoch
+      // (1970-01-01) rather than an empty value, so a user who cleared their
+      // date of birth got a date of birth of 1970 instead.
+      user.dateOfBirth = data.dateOfBirth === null ? null : new Date(data.dateOfBirth);
     }
 
     const saved = await userRepo.save(user);

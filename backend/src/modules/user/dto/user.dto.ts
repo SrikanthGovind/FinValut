@@ -1,6 +1,6 @@
 import { ArgsType, Field, ID } from "type-graphql";
 import {
-  IsDate,
+  IsDateString,
   IsEmail,
   IsOptional,
   Length,
@@ -66,7 +66,12 @@ export class UpdateProfileInput {
 
   @Field(() => String, { nullable: true })
   @IsOptional()
-  @IsDate()
+  // IsDateString, not IsDate: the field is a GraphQL String, so it arrives as
+  // a string. IsDate tests `value instanceof Date` and therefore rejects every
+  // input in every format, which made dateOfBirth unwritable — the field could
+  // only ever be set by sending null, and null then became 1970-01-01 via
+  // `new Date(null)` in the resolver.
+  @IsDateString({}, { message: "dateOfBirth must be an ISO 8601 date (YYYY-MM-DD)" })
   dateOfBirth?: string;
 }
 

@@ -5,6 +5,10 @@ import {
   ObjectType,
   registerEnumType,
 } from "type-graphql";
+// type-graphql re-exports only the timestamp scalars, so the date-only scalar
+// comes from graphql-scalars directly. It is already a transitive dependency of
+// type-graphql, hence of this project.
+import { GraphQLDate } from "graphql-scalars";
 import {
   Column,
   CreateDateColumn,
@@ -67,9 +71,18 @@ export class User {
   @Column({ length: 20, nullable: true })
   phone?: string;
 
-  @Field(() => GraphQLISODateTime, { nullable: true })
+  // GraphQLDate, not GraphQLISODateTime: the column is a Postgres `date`, which
+  // the driver hands back as "2000-01-02" — a bare date with no time. The
+  // DateTime scalar rejects that ("DateTime cannot represent an invalid
+  // date-time-string 2000-01-02"), so declaring the field as a timestamp made
+  // it unreadable: any user who set a date of birth could no longer be
+  // fetched, because every query selecting this field failed to serialize.
+  @Field(() => GraphQLDate, { nullable: true })
   @Column({ type: "date", nullable: true })
-  dateOfBirth?: Date;
+  // Nullable, not merely optional: the column is nullable and `updateProfile`
+  // sets this to null to clear it. Declaring it `Date | undefined` would make
+  // that assignment a type error and hide the clearing path.
+  dateOfBirth?: Date | null;
 
   @Field(() => String, { nullable: true })
   @Column({ length: 12, nullable: true, unique: true })
